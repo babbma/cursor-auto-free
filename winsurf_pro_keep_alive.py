@@ -11,6 +11,7 @@ import go_cursor_help
 import patch_cursor_get_machine_id
 from reset_machine import MachineIDResetter
 from language import language, get_translation
+from openpyxl import Workbook
 
 os.environ["PYTHONVERBOSE"] = "0"
 os.environ["PYINSTALLER_VERBOSE"] = "0"
@@ -222,7 +223,7 @@ def update_cursor_auth(email=None, access_token=None, refresh_token=None):
 def sign_up_account(browser, tab):
     logging.info(get_translation("start_account_registration"))
     logging.info(get_translation("visiting_registration_page", url=sign_up_url))
-    sign_button = tab.ele('xpath://a[@class=\'rt-Text BrandedLink rt-reset\']')
+    sign_button = tab.ele('xpath://a[@class=\'cursor-pointer hover:underline text-sk-sea/70\']')
     if sign_button:
         sign_button.click()
     else:
@@ -236,11 +237,11 @@ def sign_up_account(browser, tab):
     try:
         if tab.ele("@name=first_name"):
             logging.info(get_translation("filling_personal_info"))
-            tab.actions.click("@name=first_name").input(first_name)
+            tab.actions.click("@name=firstName").input(first_name)
             logging.info(get_translation("input_first_name", name=first_name))
             time.sleep(random.uniform(1, 3))
 
-            tab.actions.click("@name=last_name").input(last_name)
+            tab.actions.click("@name=lastName").input(last_name)
             logging.info(get_translation("input_last_name", name=last_name))
             time.sleep(random.uniform(1, 3))
 
@@ -248,8 +249,11 @@ def sign_up_account(browser, tab):
             logging.info(get_translation("input_email", email=account))
             time.sleep(random.uniform(1, 3))
 
+            tab.actions.click("@name=agreeTOS")
+            time.sleep(random.uniform(1, 3))
+            
             logging.info(get_translation("submitting_personal_info"))
-            tab.actions.click("@type=submit")
+            tab.actions.click("@@type=button@@text=Continue")
 
     except Exception as e:
         logging.error(get_translation("registration_page_access_failed", error=str(e)))
@@ -366,10 +370,13 @@ class EmailGenerator:
         return random.choice(self.names)
 
     def generate_email(self, length=4):
-        """Generate a random email address"""
-        length = random.randint(0, length)  # Generate a random int between 0 and length
-        timestamp = str(int(time.time()))[-length:]  # Use the last length digits of timestamp
-        return f"{self.default_first_name}{timestamp}@{self.domain}"
+        """Generate a random, unique-ish email address"""
+        length = max(4, length)
+        # 使用纳秒时间戳 + 2 位随机字符，避免在快速循环中重复
+        suffix = str(time.time_ns())[-length:] + ''.join(
+            random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=2)
+        )
+        return f"{self.default_first_name}{suffix}@{self.domain}"
 
     def get_account_info(self):
         """Get complete account information"""
@@ -424,109 +431,86 @@ def print_end_message():
     )
 
 
-if __name__ == "__main__":
-    print_logo()
-    
-    # Add language selection
-    print("\n")
-    language.select_language_prompt()
-    
-    greater_than_0_45 = check_cursor_version()
+def export_accounts_to_xlsx(rows, filename: str = "") -> str:
+    """将账号信息导出为 xlsx 文件。
+
+    rows: 列表，每项为包含 first_name、last_name、email、password、token、status 的字典
+    filename: 可选自定义路径；为空则默认写入 logs/accounts_时间戳.xlsx
+    返回最终写入的文件路径
+    """
+    if not filename:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join("logs", f"accounts_{ts}.xlsx")
+
+    # 确保目录存在
+    dir_path = os.path.dirname(filename)
+    if dir_path:
+        os.makedirs(dir_path, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "accounts"
+    header = ["first_name", "last_name", "email", "password", "token", "status"]
+    ws.append(header)
+
+    for r in rows:
+        ws.append([
+            r.get("first_name", ""),
+            r.get("last_name", ""),
+            r.get("email", ""),
+            r.get("password", ""),
+            r.get("token", ""),
+            r.get("status", ""),
+        ])
+
+    wb.save(filename)
+    logging.info(f"Accounts exported to: {filename}")
+    return filename
+
+
+def run_registration_flow(account_info: dict):
+    """执行一次完整注册流程，返回 (token, status)。
+    status: 'success' 或 'failed'
+    """
+    # 这些变量在 sign_up_account 中会被引用
+    global first_name, last_name, account, password, email_handler
+    global sign_up_url
+
+    first_name = account_info["first_name"]
+    last_name = account_info["last_name"]
+    account = account_info["email"]
+    password = account_info["password"]
+    email_handler = EmailVerificationHandler(account)
+
+    # 站点配置放到模块全局，供 sign_up_account 使用
+    login_url = "https://windsurf.com/account/login"
+    sign_up_url = "https://windsurf.com/account/register"
+    # settings_url = "https://www.cursor.com/settings"
+
+    logging.info(get_translation("generating_random_account"))
+    logging.info(get_translation("generated_email_account", email=account))
+    logging.info(get_translation("initializing_browser"))
+
+    # 获取并规范化 UA
+    user_agent = get_user_agent()
+    if not user_agent:
+        logging.error(get_translation("get_user_agent_failed"))
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    user_agent = user_agent.replace("HeadlessChrome", "Chrome")
+
     browser_manager = None
+    token_value = ""
+    status_value = "failed"
     try:
-        logging.info(get_translation("initializing_program"))
-        ExitCursor()
-
-        # Prompt user to select operation mode
-        print(get_translation("select_operation_mode"))
-        print(get_translation("reset_machine_code_only"))
-        print(get_translation("complete_registration"))
-        print(get_translation("complete_registration_manual"))
-
-        while True:
-            try:
-                choice = int(input(get_translation("enter_option")).strip())
-                if choice in [1, 2,3]:
-                    break
-                else:
-                    print(get_translation("invalid_option"))
-            except ValueError:
-                print(get_translation("enter_valid_number"))
-
-        if choice == 1:
-            # Only reset machine code
-            reset_machine_id(greater_than_0_45)
-            logging.info(get_translation("machine_code_reset_complete"))
-            print_end_message()
-            sys.exit(0)
-
-        email_generator = EmailGenerator()
-        first_name = email_generator.default_first_name
-        last_name = email_generator.default_last_name
-        account = email_generator.generate_email()
-        password = email_generator.default_password
-
-        email_handler = EmailVerificationHandler(account)
-        if choice ==3:
-            # logging.info(get_translation("input_first_name", name=first_name))
-            # logging.info(get_translation("input_last_name", name=last_name))
-            # logging.info(get_translation("input_email", email=account))
-            account_info = get_translation("cursor_account_info_full",first_name= first_name,last_name= last_name,
-                                           email=account, password=password)
-            logging.info(account_info)
-            time.sleep(random.randint(5 ,10))
-
-            while True:
-                try:
-                    logging.info(get_translation("getting_email_verification"))
-                    code = email_handler.get_verification_code(retry_interval=20)
-                    if not code:
-                        logging.error(get_translation("verification_code_failure"))
-                    logging.info(get_translation("verification_code_success", code=code))
-                    logging.info(get_translation("inputting_verification_code"))
-                    logging.info(get_translation("verification_code_input_complete"))
-                    break
-                except Exception as e:
-                    logging.error(get_translation("verification_code_process_error", error=str(e)))
-            sys.exit(0)
-
-        logging.info(get_translation("initializing_browser"))
-
-        # Get user_agent
-        user_agent = get_user_agent()
-        if not user_agent:
-            logging.error(get_translation("get_user_agent_failed"))
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-        # Remove "HeadlessChrome" from user_agent
-        user_agent = user_agent.replace("HeadlessChrome", "Chrome")
-
         browser_manager = BrowserManager()
         browser = browser_manager.init_browser(user_agent)
-
-        # Get and print browser's user-agent
-        user_agent = browser.latest_tab.run_js("return navigator.userAgent")
 
         logging.info(
             "Please visit the open source project for more information: https://github.com/chengazhen/cursor-auto-free"
         )
         logging.info(get_translation("configuration_info"))
-        login_url = "https://authenticator.cursor.sh"
-        sign_up_url = "https://authenticator.cursor.sh/sign-up"
-        settings_url = "https://www.cursor.com/settings"
-        mail_url = "https://tempmail.plus"
-
-        logging.info(get_translation("generating_random_account"))
-
-        logging.info(get_translation("generated_email_account", email=account))
-
-        logging.info(get_translation("initializing_email_verification"))
-        # email_handler = EmailVerificationHandler(account)
-
-        auto_update_cursor_auth = True
 
         tab = browser.latest_tab
-
         tab.run_js("try { turnstile.reset() } catch(e) { }")
 
         logging.info(get_translation("starting_registration"))
@@ -538,9 +522,9 @@ if __name__ == "__main__":
             token = get_cursor_session_token(tab)
             if token:
                 logging.info(get_translation("updating_auth_info"))
-                update_cursor_auth(
-                    email=account, access_token=token, refresh_token=token
-                )
+                update_cursor_auth(email=account, access_token=token, refresh_token=token)
+                token_value = token
+                status_value = "success"
                 logging.info(
                     "Please visit the open source project for more information: https://github.com/chengazhen/cursor-auto-free"
                 )
@@ -550,6 +534,88 @@ if __name__ == "__main__":
                 print_end_message()
             else:
                 logging.error(get_translation("session_token_failed"))
+    except Exception as e:
+        logging.error(get_translation("program_error", error=str(e)))
+    finally:
+        if browser_manager:
+            browser_manager.quit()
+        time.sleep(1)
+
+    return token_value, status_value
+
+if __name__ == "__main__":
+    print_logo()
+    
+    # Add language selection
+    print("\n")
+    language.select_language_prompt()
+    
+    browser_manager = None
+    try:
+        logging.info(get_translation("initializing_program"))
+        # ExitCursor()
+        try:
+            greater_than_0_45 = check_cursor_version()
+        except Exception:
+            greater_than_0_45 = False
+
+        # Prompt user to select operation mode
+        print(get_translation("select_operation_mode"))
+        print(get_translation("menu_full_registration"))
+        print(get_translation("menu_batch_generate_accounts"))
+        print(get_translation("menu_batch_full_registration"))
+
+        while True:
+            try:
+                choice = int(input(get_translation("enter_option_3")).strip())
+                if choice in [1, 2,3]:
+                    break
+                else:
+                    print(get_translation("invalid_option"))
+            except ValueError:
+                print(get_translation("enter_valid_number"))
+
+        email_generator = EmailGenerator()
+        results = []
+        if choice == 2 or choice == 3:
+            try:
+                count = int(input(get_translation("enter_batch_count")).strip())
+            except ValueError:
+                print(get_translation("enter_valid_number"))
+                sys.exit(1)
+            for _ in range(count):
+                info = email_generator.get_account_info()
+                results.append({
+                    "first_name": info["first_name"],
+                    "last_name": info["last_name"],
+                    "email": info["email"],
+                    "password": info["password"],
+                    "token": "",
+                    "status": "generated",
+                })
+                time.sleep(random.uniform(0.2, 0.6))
+            if choice == 2:
+                export_accounts_to_xlsx(results)
+                sys.exit(0)
+
+        if choice == 3:
+            for account in results:
+                token_value, status_value = run_registration_flow(account)
+                results.append({
+                    "first_name": account["first_name"],
+                    "last_name": account["last_name"],
+                    "email": account["email"],
+                    "password": account["password"],
+                    "token": token_value,
+                    "status": status_value,
+                })
+
+            export_accounts_to_xlsx(results)
+            sys.exit(0)
+
+        # 单次完整注册流程：复用通用方法，避免重复代码
+        single_info = email_generator.get_account_info()
+        run_registration_flow(single_info)
 
     except Exception as e:
         logging.error(get_translation("program_error", error=str(e)))

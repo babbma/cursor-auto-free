@@ -4,7 +4,8 @@ import os
 a = Analysis(
     ['cursor_pro_keep_alive.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('D:\\Program\\anaconda3\\pkgs\\sqlite-3.45.3-h2bbff1b_0\\Library\\bin\\sqlite3.dll', '.')],
+	#binaries=[],
     datas=[
         ('turnstilePatch', 'turnstilePatch'),
         ('cursor_auth_manager.py', '.'),
